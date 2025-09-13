@@ -1,162 +1,102 @@
-// index.js
-import makeWASocket, { useMultiFileAuthState, downloadMediaMessage } from "@whiskeysockets/baileys"
-import qrcode from "qrcode-terminal"
-import express from "express"
-import fetch from "node-fetch"
-import fs from "fs"
-import path from "path"
-import { fileURLToPath } from "url"
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  downloadMediaMessage
+} = require("@whiskeysockets/baileys");
+const pino = require("pino");
+const fs = require("fs");
+const { exec } = require("child_process");
+const { aiChat, hdImage, googleSearch } = require("./apis");
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
-
-const app = express()
-app.use(express.json())
-
-// === START BOT ===
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("./session")
+  const { state, saveCreds } = await useMultiFileAuthState("./session");
+  const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
+    version,
+    logger: pino({ level: "silent" }),
     auth: state,
-    printQRInTerminal: true, // QR/Pairing code di terminal
-  })
+    printQRInTerminal: false,
+  });
 
-  sock.ev.on("creds.update", saveCreds)
+  // Pairing code
+  if (!sock.authState.creds.registered) {
+    let phoneNumber = process.env.NUMBER || "62xxxxxxx";
+    let code = await sock.requestPairingCode(phoneNumber);
+    console.log("Pairing code:", code);
+  }
 
+  sock.ev.on("creds.update", saveCreds);
+
+  // Handler pesan
   sock.ev.on("messages.upsert", async (m) => {
-    const msg = m.messages[0]
-    if (!msg.message || msg.key.fromMe) return
+    const msg = m.messages[0];
+    if (!msg.message || msg.key.fromMe) return;
 
-    const from = msg.key.remoteJid
-    const body =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      ""
+    const from = msg.key.remoteJid;
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
 
-    // === COMMAND HANDLER ===
-    if (body.startsWith(".menu")) {
-      const menu = `
-🌟 *BOT MENU* 🌟
-
-1️⃣ .sticker   → ubah gambar jadi stiker
-2️⃣ .brat      → random brat image
-3️⃣ .bratvideo → random brat video
-4️⃣ .ai <teks> → tanya AI gratis
-5️⃣ .hd (balas gambar) → enhance foto
-6️⃣ .google <teks> → cari di Google
-`
-      await sock.sendMessage(from, { text: menu })
+    // Menu
+    if (text === "menu") {
+      let menu = `*📌 MENU BOT*
+1. sticker (balas gambar/vid)
+2. brat
+3. bratvideo
+4. ai <teks>
+5. hd <url gambar>
+6. google <query>`;
+      await sock.sendMessage(from, { text: menu }, { quoted: msg });
     }
 
-    // === AI ===
-    if (body.startsWith(".ai ")) {
-      const q = body.replace(".ai ", "")
-      try {
-        let res = await fetch(
-          `https://api.safone.dev/ai/gpt?q=${encodeURIComponent(q)}`
-        )
-        let data = await res.json()
-        await sock.sendMessage(from, { text: data.answer || "gagal ambil jawaban" })
-      } catch (e) {
-        await sock.sendMessage(from, { text: "Error AI API" })
-      }
-    }
-
-    // === Google Search ===
-    if (body.startsWith(".google ")) {
-      const q = body.replace(".google ", "")
-      try {
-        let res = await fetch(
-          `https://api.safone.dev/google?query=${encodeURIComponent(q)}`
-        )
-        let data = await res.json()
-        let hasil = data.results
-          .map((v, i) => `${i + 1}. ${v.title}\n${v.link}`)
-          .join("\n\n")
-        await sock.sendMessage(from, { text: hasil })
-      } catch (e) {
-        await sock.sendMessage(from, { text: "Error Google API" })
-      }
-    }
-
-    // === Sticker ===
-    if (body.startsWith(".sticker")) {
+    // Sticker (reply image/video)
+    else if (text === "sticker") {
       if (msg.message.imageMessage || msg.message.videoMessage) {
-        const buffer = await downloadMediaMessage(msg, "buffer", {}, { logger: console })
-        await sock.sendMessage(from, { sticker: buffer })
+        let buffer = await downloadMediaMessage(msg, "buffer", {}, { logger: pino() });
+        await sock.sendMessage(from, { sticker: buffer }, { quoted: msg });
       } else {
-        await sock.sendMessage(from, { text: "❌ Kirim gambar/video + caption *.sticker*" })
+        await sock.sendMessage(from, { text: "Reply gambar/video dengan ketik: sticker" }, { quoted: msg });
       }
     }
 
-    // === Brat Image ===
-    if (body.startsWith(".brat")) {
-      try {
-        let res = await fetch("https://api.waifu.pics/sfw/waifu")
-        let data = await res.json()
-        await sock.sendMessage(from, { image: { url: data.url }, caption: "😏 Brat Image" })
-      } catch {
-        await sock.sendMessage(from, { text: "Error ambil brat image" })
-      }
+    // Brat (audio)
+    else if (text === "brat") {
+      await sock.sendMessage(from, {
+        audio: { url: "https://file.niduka.dev/file/brat.mp3" },
+        mimetype: "audio/mpeg",
+        ptt: true
+      }, { quoted: msg });
     }
 
-    // === Brat Video ===
-    if (body.startsWith(".bratvideo")) {
-      try {
-        let res = await fetch("https://api.waifu.pics/sfw/dance")
-        let data = await res.json()
-        await sock.sendMessage(from, { video: { url: data.url }, caption: "🎥 Brat Video" })
-      } catch {
-        await sock.sendMessage(from, { text: "Error ambil brat video" })
-      }
+    // Bratvideo
+    else if (text === "bratvideo") {
+      await sock.sendMessage(from, {
+        video: { url: "https://file.niduka.dev/file/brat.mp4" },
+        caption: "Brat Video 🎥"
+      }, { quoted: msg });
     }
 
-    // === HD Enhance (balas gambar) ===
-    if (body.startsWith(".hd")) {
-      if (!msg.message?.imageMessage && !msg.message?.extendedTextMessage) {
-        await sock.sendMessage(from, { text: "❌ Balas gambar dengan caption .hd" })
-        return
-      }
-
-      let quoted = m.messages[0].message?.extendedTextMessage?.contextInfo?.quotedMessage
-      if (!quoted?.imageMessage) {
-        await sock.sendMessage(from, { text: "❌ Balas gambar dengan caption .hd" })
-        return
-      }
-
-      const buffer = await downloadMediaMessage(
-        { message: quoted },
-        "buffer",
-        {},
-        { logger: console }
-      )
-
-      // Upload ke API HD gratis (contoh pakai safo API fake)
-      try {
-        let res = await fetch("https://api.safone.dev/ai/hd", {
-          method: "POST",
-          body: buffer,
-          headers: { "Content-Type": "application/octet-stream" },
-        })
-        let arrayBuffer = await res.arrayBuffer()
-        let outPath = path.join(__dirname, "hd.jpg")
-        fs.writeFileSync(outPath, Buffer.from(arrayBuffer))
-        await sock.sendMessage(from, { image: fs.readFileSync(outPath), caption: "🔍 HD Enhanced" })
-      } catch {
-        await sock.sendMessage(from, { text: "Error HD API" })
-      }
+    // AI
+    else if (text.startsWith("ai ")) {
+      let query = text.slice(3);
+      let res = await aiChat(query);
+      await sock.sendMessage(from, { text: res }, { quoted: msg });
     }
-  })
 
-  console.log("✅ Bot ready")
+    // HD
+    else if (text.startsWith("hd ")) {
+      let url = text.slice(3);
+      let res = await hdImage(url);
+      await sock.sendMessage(from, { text: res }, { quoted: msg });
+    }
+
+    // Google
+    else if (text.startsWith("google ")) {
+      let query = text.slice(7);
+      let res = await googleSearch(query);
+      await sock.sendMessage(from, { text: res }, { quoted: msg });
+    }
+  });
 }
 
-startBot()
-
-// === EXPRESS API SERVER ===
-app.get("/", (req, res) => {
-  res.send("API jalan ✅")
-})
-
-app.listen(3000, () => console.log("🌐 API jalan di http://localhost:3000"))
+startBot();
