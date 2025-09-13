@@ -1,0 +1,14 @@
+{
+  "name": "botwa-termux",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
+    "node-fetch": "^2.6.11",
+    "pino": "^8.17.0"
+  }
+}
